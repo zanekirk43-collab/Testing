@@ -1,27 +1,31 @@
-# Amazon WorkMail migration
+# Amazon WorkMail -> Google Workspace
 
 WorkMail shuts down on **31 March 2027**. After that, mailboxes can't be reached.
-Scope: one mailbox; DNS hosted in Route 53.
+Scope: one mailbox; DNS hosted in Route 53; destination Google Workspace Business Starter.
+
+Setup: `pip install awscli boto3`, with AWS credentials allowed by `iam-policy.json`
+and `AWS_DEFAULT_REGION` set to the WorkMail region.
 
 ## Steps
 
-1. **Pick the new provider** and create the mailbox there for the same address.
-2. **Give the migration access** (do not paste keys into chat):
-   - IAM -> create user `claude-migration`, attach an inline policy with `iam-policy.json`.
-   - Create an access key for it.
-   - Add `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_DEFAULT_REGION`
-     (your WorkMail region) as environment variables in the Claude cloud environment
-     settings, then start a new session.
-3. **Back up** -> `./backup_mailbox.sh`. Writes an inventory to `inventory/` and a full
-   mailbox export to a private, KMS-encrypted S3 bucket `workmail-backup-<account>-<region>`.
-4. **Copy mail** with the new provider's IMAP migration tool, using
-   `imap.mail.<region>.awsapps.com`, port 993, SSL, and your WorkMail username/password.
-   Calendar and contacts: export from Outlook or the WorkMail web app as .ics/.vcf and import.
-5. **DNS cutover (Route 53)** - only after the copy is checked: lower TTLs, replace MX,
-   SPF, DKIM, DMARC and autodiscover records with the new provider's values, remove the
-   WorkMail/SES records, run one last sync.
-6. **Check and decommission**: send/receive tests, reconnect devices, then after a few
-   weeks delete the WorkMail organization yourself, well before 31 March 2027.
+| # | Step | Who |
+|---|------|-----|
+| 1 | Sign up for Google Workspace with your existing domain; make the admin account your current address. | You |
+| 2 | Verify the domain: copy the `google-site-verification=...` token from the signup screen, then `python3 dns_cutover.py DOMAIN verify --token TOKEN --apply`. | Claude |
+| 3 | Back up the WorkMail mailbox to S3: `./backup_mailbox.sh`. | Claude |
+| 4 | Copy mail: Admin console -> Data -> Data import & export -> Data migration. Source "Other IMAP server", server `imap.mail.<region>.awsapps.com`, port 993, SSL. Sign in with your WorkMail address and password. | You |
+| 5 | Check that mail arrived in Gmail. | You |
+| 6 | Generate DKIM: Admin console -> Apps -> Google Workspace -> Gmail -> Authenticate email -> Generate new record (2048-bit). Copy the TXT value. | You |
+| 7 | Switch mail to Google: `python3 dns_cutover.py DOMAIN cutover --dkim "v=DKIM1; k=rsa; p=..."` (dry run), then add `--apply`. Then click "Start authentication" for DKIM in the Admin console. | Claude |
+| 8 | Run the data migration once more to pick up anything that arrived in WorkMail during the switch. | You |
+| 9 | Calendar and contacts: export from the WorkMail web app or Outlook as .ics/.vcf, import into Google Calendar/Contacts. | You |
+| 10 | Reconnect phone and desktop mail apps to your Google account. | You |
+| 11 | After a few weeks: `python3 dns_cutover.py DOMAIN cleanup --apply`, then delete the WorkMail organization in the AWS console. | Claude, then you |
+
+## Rollback
+
+Every `--apply` first saves the zone to `inventory/route53-DOMAIN-<time>.json`.
+`python3 dns_cutover.py DOMAIN restore inventory/<file>.json --apply` puts those records back.
 
 ## Safety
 
