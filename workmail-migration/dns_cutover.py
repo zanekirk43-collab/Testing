@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Route 53 changes for moving a domain from Amazon WorkMail to Google Workspace.
+"""Route 53 changes for moving a domain from Amazon WorkMail to Zoho Mail or Google Workspace.
 
 Every command only prints its plan unless you pass --apply. Before any change,
 the domain's current records are saved to inventory/ so they can be restored.
 
-  verify   --token TOKEN   add Google's domain-verification TXT record
-  cutover  [--dkim VALUE]  point mail at Google: MX, SPF, DKIM, DMARC
+  verify   --txt VALUE     add the provider's domain-verification TXT record
+  cutover  [--dkim VALUE --dkim-selector NAME]
+                           point mail at the provider: MX, SPF, DKIM, DMARC
   cleanup                  remove leftover WorkMail/SES records
   restore  FILE            put back records from a saved backup (rollback)
 
@@ -19,8 +20,15 @@ import sys
 
 import boto3
 
-GOOGLE_MX = "1 smtp.google.com"
-GOOGLE_SPF = "v=spf1 include:_spf.google.com ~all"
+# Zoho's hostnames depend on the data center your Zoho account lives in
+# (zoho.com, zoho.eu, zoho.in, zoho.com.au, ...). Check them against
+# Zoho Admin Console -> Domains -> your domain -> Email configuration.
+def provider_records(provider, zoho_dc):
+    if provider == "google":
+        return ["1 smtp.google.com"], "v=spf1 include:_spf.google.com ~all"
+    return ([f"10 mx.zoho.{zoho_dc}", f"20 mx2.zoho.{zoho_dc}", f"50 mx3.zoho.{zoho_dc}"],
+            f"v=spf1 include:zohomail.{zoho_dc} ~all")
+
 DEFAULT_DMARC = "v=DMARC1; p=none"
 
 
@@ -81,24 +89,24 @@ def backup(domain, records):
     return path
 
 
-def plan_verify(domain, records, token, ttl):
+def plan_verify(domain, records, txt, ttl):
     apex = get(records, domain, "TXT")
     vals = values(apex)
-    new = q(f"google-site-verification={token}")
+    new = q(txt)
     if new in vals:
         return []
     return [upsert(domain, "TXT", vals + [new], apex["TTL"] if apex else ttl)]
 
 
-def plan_cutover(domain, records, dkim, dmarc, ttl):
-    changes = [upsert(domain, "MX", [GOOGLE_MX], ttl)]
+def plan_cutover(domain, records, mx, spf, dkim, selector, dmarc, ttl):
+    changes = [upsert(domain, "MX", mx, ttl)]
 
     apex = get(records, domain, "TXT")
     kept = [v for v in values(apex) if not unq(v).startswith("v=spf1")]
-    changes.append(upsert(domain, "TXT", kept + [q(GOOGLE_SPF)], ttl))
+    changes.append(upsert(domain, "TXT", kept + [q(spf)], ttl))
 
     if dkim:
-        changes.append(upsert(f"google._domainkey.{domain}", "TXT", [q(dkim)], ttl))
+        changes.append(upsert(f"{selector}._domainkey.{domain}", "TXT", [q(dkim)], ttl))
 
     if not get(records, f"_dmarc.{domain}", "TXT"):
         changes.append(upsert(f"_dmarc.{domain}", "TXT", [q(dmarc)], ttl))
@@ -147,11 +155,14 @@ def main():
     p.add_argument("domain")
     p.add_argument("--apply", action="store_true", help="make the changes (default: only show them)")
     p.add_argument("--ttl", type=int, default=300)
+    p.add_argument("--provider", choices=["zoho", "google"], default="zoho")
+    p.add_argument("--zoho-dc", default="com", help="Zoho data center TLD: com, eu, in, com.au, jp, ca, sa ...")
     sub = p.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("verify")
-    v.add_argument("--token", required=True, help="value after google-site-verification=")
+    v.add_argument("--txt", required=True, help="full TXT value, e.g. zoho-verification=zb12345678.zmverify.zoho.com")
     c = sub.add_parser("cutover")
-    c.add_argument("--dkim", help="DKIM TXT value from Admin console (v=DKIM1; k=rsa; p=...)")
+    c.add_argument("--dkim", help="DKIM TXT value from the admin console (v=DKIM1; k=rsa; p=...)")
+    c.add_argument("--dkim-selector", help="DKIM selector name (Google: google; Zoho: the one you chose)")
     c.add_argument("--dmarc", default=DEFAULT_DMARC, help="used only if no _dmarc record exists")
     sub.add_parser("cleanup")
     r = sub.add_parser("restore")
@@ -164,9 +175,13 @@ def main():
     records = all_records(r53, zone_id)
 
     if args.cmd == "verify":
-        changes = plan_verify(domain, records, args.token, args.ttl)
+        changes = plan_verify(domain, records, args.txt, args.ttl)
     elif args.cmd == "cutover":
-        changes = plan_cutover(domain, records, args.dkim, args.dmarc, args.ttl)
+        mx, spf = provider_records(args.provider, args.zoho_dc)
+        selector = args.dkim_selector or ("google" if args.provider == "google" else None)
+        if args.dkim and not selector:
+            sys.exit("--dkim-selector is required with --dkim for Zoho")
+        changes = plan_cutover(domain, records, mx, spf, args.dkim, selector, args.dmarc, args.ttl)
     elif args.cmd == "cleanup":
         changes = plan_cleanup(domain, records)
     else:
