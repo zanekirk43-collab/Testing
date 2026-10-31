@@ -58,6 +58,7 @@
         "iam:CreateRole",
         "iam:GetRole",
         "iam:PutRolePolicy",
+        "iam:UpdateAssumeRolePolicy",
         "iam:PassRole"
       ],
       "Resource": "arn:aws:iam::*:role/WorkMailExportRole"

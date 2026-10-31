@@ -55,15 +55,21 @@ fi
 KEY_ARN=$(aws kms describe-key --key-id "$KEY_ID" --query KeyMetadata.Arn --output text)
 
 # --- Role WorkMail assumes to write the export -----------------------------
-if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
-  aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document "{
-    \"Version\": \"2012-10-17\",
-    \"Statement\": [{
-      \"Effect\": \"Allow\",
-      \"Principal\": {\"Service\": \"export.workmail.amazonaws.com\"},
-      \"Action\": \"sts:AssumeRole\",
-      \"Condition\": {\"StringEquals\": {\"sts:ExternalId\": \"$ORG_ID\"}}
-    }]}" >/dev/null
+TRUST="{
+  \"Version\": \"2012-10-17\",
+  \"Statement\": [{
+    \"Effect\": \"Allow\",
+    \"Principal\": {\"Service\": \"export.workmail.amazonaws.com\"},
+    \"Action\": \"sts:AssumeRole\",
+    \"Condition\": {
+      \"StringEquals\": {\"aws:SourceAccount\": \"$ACCOUNT\"},
+      \"ArnLike\": {\"aws:SourceArn\": \"arn:aws:workmail:$REGION:$ACCOUNT:organization/$ORG_ID\"}
+    }
+  }]}"
+if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+  aws iam update-assume-role-policy --role-name "$ROLE_NAME" --policy-document "$TRUST"
+else
+  aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document "$TRUST" >/dev/null
   aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name export --policy-document "{
     \"Version\": \"2012-10-17\",
     \"Statement\": [
