@@ -1,0 +1,12 @@
+{
+  "useMarkdownLinks": true,
+  "newLinkFormat": "relative",
+  "alwaysUpdateLinks": true,
+  "showUnsupportedFiles": false,
+  "userIgnoreFilters": [
+    "Templates/"
+  ],
+  "newFileLocation": "folder",
+  "newFileFolderPath": "0-Inbox",
+  "attachmentFolderPath": "3-Resources/attachments"
+}
